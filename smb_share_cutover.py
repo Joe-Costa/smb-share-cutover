@@ -31,6 +31,8 @@ Usage:
     python3 smb_share_cutover.py --host <cluster> remove --share <share-name> --dry-run
 """
 
+VERSION = "1.0.0"
+
 import argparse
 import json
 import os
@@ -546,6 +548,9 @@ def main():
         description="SMB Share Cutover Tool for Qumulo Clusters",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {VERSION}",
     )
     parser.add_argument(
         "--host", required=True,
