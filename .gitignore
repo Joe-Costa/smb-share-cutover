@@ -1,0 +1,15 @@
+LLM-API-Guide/
+.venv/
+.claude/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.env
+*.db
+*.sqlite
+*.sqlite3
+*.bak
+backups/
+bump_version.py
