@@ -31,11 +31,10 @@ Usage:
     python3 smb_share_cutover.py --host <cluster> remove --share <share-name> --dry-run
 """
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 import argparse
 import json
-import os
 import ssl
 import sys
 import time
@@ -62,12 +61,32 @@ DENY_ALL_NETWORK = [
 BASE_URL = None
 TOKEN = None
 SSL_CTX = None
+HOST = None
+
+
+def _setup_console():
+    """Ensure UTF-8 output on Windows. No-op on other platforms."""
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+            sys.stderr.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
+def _supports_unicode():
+    """Check if stdout can handle Unicode box-drawing characters."""
+    if sys.platform != "win32":
+        return True
+    enc = getattr(sys.stdout, "encoding", "") or ""
+    return enc.lower().replace("-", "") in ("utf8", "utf_8")
 
 
 def init_connection(host, creds_file):
     """Set up module globals from CLI arguments."""
-    global BASE_URL, TOKEN, SSL_CTX
+    global BASE_URL, TOKEN, SSL_CTX, HOST
 
+    HOST = host
     BASE_URL = f"https://{host}:{PORT}"
 
     SSL_CTX = ssl.create_default_context()
@@ -85,29 +104,41 @@ def init_connection(host, creds_file):
 # ── Table rendering ──────────────────────────────────────────────────────────
 
 def render_table(headers, rows):
-    """Render a Unicode box-drawing table. Returns a string."""
+    """Render a box-drawing table. Uses Unicode on capable terminals,
+    ASCII on legacy Windows consoles. Returns a string."""
+    if _supports_unicode():
+        TL, TM, TR = "┌", "┬", "┐"
+        ML, MM, MR = "├", "┼", "┤"
+        BL, BM, BR = "└", "┴", "┘"
+        H, V = "─", "│"
+    else:
+        TL, TM, TR = "+", "+", "+"
+        ML, MM, MR = "+", "+", "+"
+        BL, BM, BR = "+", "+", "+"
+        H, V = "-", "|"
+
     # Calculate column widths (minimum = header width)
     widths = [len(h) for h in headers]
     for row in rows:
         for i, cell in enumerate(row):
             widths[i] = max(widths[i], len(str(cell)))
 
-    def hline(left, mid, right, fill="─"):
-        return left + mid.join(fill * (w + 2) for w in widths) + right
+    def hline(left, mid, right):
+        return left + mid.join(H * (w + 2) for w in widths) + right
 
     def data_row(cells):
         parts = []
         for i, cell in enumerate(cells):
             parts.append(f" {str(cell).ljust(widths[i])} ")
-        return "│" + "│".join(parts) + "│"
+        return V + V.join(parts) + V
 
     lines = []
-    lines.append(hline("┌", "┬", "┐"))
+    lines.append(hline(TL, TM, TR))
     lines.append(data_row(headers))
-    lines.append(hline("├", "┼", "┤"))
+    lines.append(hline(ML, MM, MR))
     for row in rows:
         lines.append(data_row(row))
-    lines.append(hline("└", "┴", "┘"))
+    lines.append(hline(BL, BM, BR))
     return "\n".join(lines)
 
 
@@ -141,11 +172,16 @@ def api(method, path, body=None):
     if body is not None:
         req.data = json.dumps(body).encode()
 
-    with urllib.request.urlopen(req, context=SSL_CTX) as resp:
-        raw = resp.read()
-        if not raw:
-            return {"_status": resp.status}
-        return json.loads(raw)
+    try:
+        with urllib.request.urlopen(req, context=SSL_CTX) as resp:
+            raw = resp.read()
+            if not raw:
+                return {"_status": resp.status}
+            return json.loads(raw)
+    except urllib.error.HTTPError as e:
+        # Attach the response body so callers can inspect it
+        e.api_body = e.read().decode("utf-8", errors="replace")
+        raise
 
 
 # ── Share lookup ─────────────────────────────────────────────────────────────
@@ -295,7 +331,7 @@ def disable_share(share_id, dry_run=False):
         print(f"[DRY-RUN] Would disable share '{share_name}'")
 
     print(f"\nBackup: {backup_file}")
-    print(f"Restore with: python3 {__file__} restore --backup {backup_file}")
+    print(f"Restore with: {sys.executable} {__file__} --host {HOST} restore --backup {backup_file}")
 
 
 # ── Backup ───────────────────────────────────────────────────────────────────
@@ -341,17 +377,32 @@ def lockout_share(share_id, dry_run=False):
     """PATCH network_permissions to deny all hosts. This immediately blocks
     any new I/O from connected clients, even with cached SMB sessions.
     Also ensures the global SMB hide-from-unauthorized-hosts setting is on
-    so the share disappears from UNC enumeration."""
+    so the share disappears from UNC enumeration.
+
+    If the share's filesystem path no longer exists, the PATCH will fail
+    because the Qumulo API re-validates fs_path on every update. In that
+    case the lockout is skipped (the share is already inaccessible) and
+    the function returns False."""
     if dry_run:
         print(f"  [DRY-RUN] Would PATCH share {share_id} network_permissions → DENY 0.0.0.0/0")
         ensure_hide_shares_from_unauthorized_hosts(dry_run=True)
-        return
+        return True
 
-    api("PATCH", f"/v3/smb/shares/{share_id}", {
-        "network_permissions": DENY_ALL_NETWORK,
-    })
+    try:
+        api("PATCH", f"/v3/smb/shares/{share_id}", {
+            "network_permissions": DENY_ALL_NETWORK,
+        })
+    except urllib.error.HTTPError as e:
+        if e.code == 400:
+            print(f"  WARNING: Could not apply network lockout (share {share_id})")
+            print(f"  The share's filesystem path may no longer exist.")
+            print(f"  Skipping lockout — the share is already inaccessible.")
+            return False
+        raise
+
     print(f"  Network lockout applied (share {share_id}): all hosts denied")
     ensure_hide_shares_from_unauthorized_hosts()
+    return True
 
 
 # ── Close file handles ───────────────────────────────────────────────────────
@@ -366,7 +417,11 @@ def get_file_id_for_path(fs_path):
 def close_share_handles(fs_path, dry_run=False):
     """Close all open SMB file handles whose file_number matches the share's
     filesystem path. Returns the count of handles closed."""
-    target_file_id = get_file_id_for_path(fs_path)
+    try:
+        target_file_id = get_file_id_for_path(fs_path)
+    except urllib.error.HTTPError:
+        print(f"  Path {fs_path} does not exist — no handles to close")
+        return 0
 
     all_handles = api("GET", "/v1/smb/files/")
     matching = [
@@ -407,8 +462,7 @@ def delete_share(share_id, share_name, dry_run=False):
         api("DELETE", f"/v3/smb/shares/{share_id}")
         print(f"  Share '{share_name}' (id={share_id}) deleted")
     except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        print(f"  ERROR deleting share: HTTP {e.code}: {body}", file=sys.stderr)
+        print(f"  ERROR deleting share: HTTP {e.code}: {e.api_body}", file=sys.stderr)
         raise
 
 
@@ -538,12 +592,14 @@ def remove_share(share_name, dry_run=False):
         print("[DRY-RUN] Skipping verification")
 
     print(f"\nBackup: {backup_file}")
-    print(f"Restore with: python3 {__file__} restore --backup {backup_file}")
+    print(f"Restore with: {sys.executable} {__file__} --host {HOST} restore --backup {backup_file}")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
+    _setup_console()
+
     parser = argparse.ArgumentParser(
         description="SMB Share Cutover Tool for Qumulo Clusters",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -588,16 +644,21 @@ def main():
 
     init_connection(args.host, args.creds_file)
 
-    if args.command == "list-shares":
-        list_all_shares()
-    elif args.command == "list-share":
-        list_share(args.id)
-    elif args.command == "disable":
-        disable_share(args.id, dry_run=args.dry_run)
-    elif args.command == "remove":
-        remove_share(args.share, dry_run=args.dry_run)
-    elif args.command == "restore":
-        restore_share(args.backup, dry_run=args.dry_run)
+    try:
+        if args.command == "list-shares":
+            list_all_shares()
+        elif args.command == "list-share":
+            list_share(args.id)
+        elif args.command == "disable":
+            disable_share(args.id, dry_run=args.dry_run)
+        elif args.command == "remove":
+            remove_share(args.share, dry_run=args.dry_run)
+        elif args.command == "restore":
+            restore_share(args.backup, dry_run=args.dry_run)
+    except urllib.error.HTTPError as e:
+        body = getattr(e, "api_body", f"HTTP {e.code}")
+        print(f"\nERROR: API call failed — {body}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

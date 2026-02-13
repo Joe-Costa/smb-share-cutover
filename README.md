@@ -1,7 +1,7 @@
 # SMB Share Cutover Tool for Qumulo
 
 <!-- version-badge:start -->
-**Version: 1.0.0**
+**Version: 1.1.0**
 <!-- version-badge:end -->
 
 Safely disable or remove individual SMB shares from a Qumulo cluster without
