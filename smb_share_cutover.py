@@ -34,7 +34,7 @@ Usage:
     python3 smb_share_cutover.py --host <cluster> remove --share <share-name> --dry-run
 """
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 import argparse
 import json
@@ -334,7 +334,7 @@ def disable_share(share_id, dry_run=False):
         print(f"[DRY-RUN] Would disable share '{share_name}'")
 
     print(f"\nBackup: {backup_file}")
-    print(f"Re-enable with: {sys.executable} {__file__} --host {HOST} enable --id {share_id} --backup {backup_file}")
+    print(f"Re-enable with: {sys.executable} {__file__} --host {HOST} enable --id {share_id} --backup '{backup_file}'")
 
 
 # ── Enable share ─────────────────────────────────────────────────────────────
@@ -389,7 +389,8 @@ def backup_share(share, dry_run=False):
     """Save the full share configuration to a timestamped JSON file."""
     BACKUP_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = BACKUP_DIR / f"{share['share_name']}_{ts}.json"
+    safe_name = share['share_name'].replace("$", "_")
+    filename = BACKUP_DIR / f"{safe_name}_{ts}.json"
 
     if dry_run:
         print(f"  [DRY-RUN] Would back up share config to {filename}")
@@ -645,7 +646,7 @@ def remove_share(share_name, dry_run=False):
         print("[DRY-RUN] Skipping verification")
 
     print(f"\nBackup: {backup_file}")
-    print(f"Restore with: {sys.executable} {__file__} --host {HOST} restore --backup {backup_file}")
+    print(f"Restore with: {sys.executable} {__file__} --host {HOST} restore --backup '{backup_file}'")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

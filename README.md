@@ -1,7 +1,7 @@
 # SMB Share Cutover Tool for Qumulo
 
 <!-- version-badge:start -->
-**Version: 1.2.0**
+**Version: 1.2.1**
 <!-- version-badge:end -->
 
 Safely disable or remove individual SMB shares from a Qumulo cluster without
@@ -173,6 +173,8 @@ Use `enable` after `disable`, and `restore` after `remove`.
 
 Every `disable` and `remove` operation saves the full share configuration to
 `backups/<ShareName>_<YYYYMMDD_HHMMSS>.json` before making changes.
+Any `$` characters in the share name are replaced with `_` in the backup
+filename to avoid shell expansion issues.
 These files contain everything needed to recreate the share: permissions,
 network rules, ABE, encryption, file/directory modes, and tenant assignment.
 
