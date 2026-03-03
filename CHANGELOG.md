@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-03
+
+### Added
+
+- `enable` command: re-enable a previously disabled share by restoring its original network permissions from a backup file
+- `restore` now shows a helpful error when the share already exists and is disabled, suggesting `enable` instead
+- `disable` now prints an `enable` hint (instead of `restore`) in its post-operation output
+
 ## [1.1.0] - 2026-02-13
 
 ### Added

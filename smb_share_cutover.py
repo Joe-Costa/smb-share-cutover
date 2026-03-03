@@ -21,6 +21,9 @@ Usage:
     # Disable a share (lockout + close handles, no delete)
     python3 smb_share_cutover.py --host <cluster> disable --id <share-id>
 
+    # Re-enable a disabled share from backup
+    python3 smb_share_cutover.py --host <cluster> enable --id <share-id> --backup backups/<share-name>_<timestamp>.json
+
     # Remove a share (backup + lockout + close handles + delete)
     python3 smb_share_cutover.py --host <cluster> remove --share <share-name>
 
@@ -31,7 +34,7 @@ Usage:
     python3 smb_share_cutover.py --host <cluster> remove --share <share-name> --dry-run
 """
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 import argparse
 import json
@@ -331,7 +334,53 @@ def disable_share(share_id, dry_run=False):
         print(f"[DRY-RUN] Would disable share '{share_name}'")
 
     print(f"\nBackup: {backup_file}")
-    print(f"Restore with: {sys.executable} {__file__} --host {HOST} restore --backup {backup_file}")
+    print(f"Re-enable with: {sys.executable} {__file__} --host {HOST} enable --id {share_id} --backup {backup_file}")
+
+
+# ── Enable share ─────────────────────────────────────────────────────────────
+
+def enable_share(share_id, backup_file, dry_run=False):
+    """Re-enable a previously disabled share by restoring its original
+    network_permissions from a backup file."""
+    # Load backup to get original network permissions
+    with open(backup_file) as f:
+        config = json.load(f)
+
+    original_permissions = config.get("network_permissions", [])
+    backup_share_name = config.get("share_name", "?")
+
+    # Verify the share exists
+    try:
+        share = get_share_by_id(share_id)
+    except urllib.error.HTTPError as e:
+        print(f"ERROR: Share ID {share_id} not found (HTTP {e.code})", file=sys.stderr)
+        sys.exit(1)
+
+    share_name = share["share_name"]
+
+    # Sanity check: backup should match the share
+    if backup_share_name != share_name:
+        print(f"WARNING: Backup is for share '{backup_share_name}' but share {share_id} is '{share_name}'")
+        print(f"  Proceeding anyway — verify this is intentional.")
+
+    # Verify the share is currently disabled
+    if not is_share_disabled(share):
+        print(f"ERROR: Share '{share_name}' (id={share_id}) is not disabled — nothing to do", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"{'[DRY-RUN] ' if dry_run else ''}Re-enabling share: {share_name} (id={share_id})\n")
+
+    if dry_run:
+        print(f"  [DRY-RUN] Would PATCH share {share_id} network_permissions back to:")
+        print(f"  {json.dumps(original_permissions, indent=2)}")
+        return
+
+    api("PATCH", f"/v3/smb/shares/{share_id}", {
+        "network_permissions": original_permissions,
+    })
+
+    print(f"  Network permissions restored for share '{share_name}' (id={share_id})")
+    print(f"  The share is now accessible again with its original network rules.")
 
 
 # ── Backup ───────────────────────────────────────────────────────────────────
@@ -478,7 +527,11 @@ def restore_share(backup_file, dry_run=False):
     # Check it doesn't already exist
     existing = get_share_by_name(share_name)
     if existing:
-        print(f"  ERROR: Share '{share_name}' already exists (id={existing['id']})")
+        if is_share_disabled(existing):
+            print(f"  ERROR: Share '{share_name}' already exists (id={existing['id']}) and is currently disabled.", file=sys.stderr)
+            print(f"  To re-enable it, use: enable --id {existing['id']} --backup {backup_file}", file=sys.stderr)
+        else:
+            print(f"  ERROR: Share '{share_name}' already exists (id={existing['id']})", file=sys.stderr)
         sys.exit(1)
 
     # Build the create payload from backup — strip server-generated fields
@@ -630,6 +683,12 @@ def main():
     ds.add_argument("--id", required=True, help="Share ID number to disable")
     ds.add_argument("--dry-run", action="store_true", help="Show what would happen")
 
+    # enable
+    en = sub.add_parser("enable", help="Re-enable a disabled share from backup")
+    en.add_argument("--id", required=True, help="Share ID number to enable")
+    en.add_argument("--backup", required=True, help="Path to backup JSON with original network permissions")
+    en.add_argument("--dry-run", action="store_true", help="Show what would happen")
+
     # remove
     rm = sub.add_parser("remove", help="Remove an SMB share (with backup)")
     rm.add_argument("--share", required=True, help="Share name to remove")
@@ -651,6 +710,8 @@ def main():
             list_share(args.id)
         elif args.command == "disable":
             disable_share(args.id, dry_run=args.dry_run)
+        elif args.command == "enable":
+            enable_share(args.id, args.backup, dry_run=args.dry_run)
         elif args.command == "remove":
             remove_share(args.share, dry_run=args.dry_run)
         elif args.command == "restore":
